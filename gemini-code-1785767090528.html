@@ -1,0 +1,664 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Generador de Mapas de Autobuses - Definitivo</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+
+    <style>
+        body, html { margin: 0; padding: 0; height: 100%; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; }
+        
+        #map-container { width: 100%; height: 100vh; position: relative; }
+        #map { width: 100%; height: 100%; z-index: 1; }
+
+        /* Panel de Controles */
+        #controls {
+            position: absolute; top: 15px; right: 15px; width: 340px; background: rgba(255, 255, 255, 0.95);
+            padding: 15px; border-radius: 8px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); z-index: 1000;
+            max-height: 90vh; overflow-y: auto; backdrop-filter: blur(5px);
+        }
+
+        h3 { margin-top: 0; margin-bottom: 12px; font-size: 1rem; color: #333; border-bottom: 2px solid #00b373; padding-bottom: 4px; }
+        .control-group { margin-bottom: 12px; }
+        label { display: block; margin-bottom: 4px; font-size: 0.85rem; color: #555; font-weight: bold; }
+        select, input[type="text"], input[type="number"] { width: 100%; padding: 6px; border-radius: 4px; border: 1px solid #ccc; font-size: 0.85rem; box-sizing: border-box; }
+        
+        .checkbox-label { display: flex; align-items: center; font-weight: normal; cursor: pointer; font-size: 0.85rem;}
+        .checkbox-label input { margin-right: 8px; cursor: pointer; }
+
+        .btn { width: 100%; padding: 10px; background: #00b373; color: white; border: none; border-radius: 4px; font-size: 0.95rem; cursor: pointer; font-weight: bold; transition: opacity 0.2s; margin-top: 5px; }
+        .btn:hover { opacity: 0.9; }
+        .btn-secondary { background: #4a90e2; }
+        .btn-secondary:hover { background: #357abd; }
+
+        /* Loader Inicial */
+        #loader { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(255,255,255,0.9); z-index: 2000; display: flex; flex-direction: column; justify-content: center; align-items: center; }
+        progress { width: 60%; height: 20px; border-radius: 10px; accent-color: #00b373; }
+        
+        /* --- ESTILOS DEL MAPA --- */
+        .emoji-icon { font-size: 16px; line-height: 16px; text-align: center; }
+        
+        .line-repeater { 
+            background: rgba(255,255,255,0.9); border-radius: 3px; padding: 1px 4px; 
+            font-weight: bold; font-size: 10px; color: #111; border: 1px solid #999;
+            white-space: nowrap; text-align: center; box-shadow: 0 1px 2px rgba(0,0,0,0.2);
+            pointer-events: none;
+        }
+        
+        .stop-label {
+            background: rgba(255,255,255,0.95); border: 1px solid #aaa; border-radius: 3px;
+            padding: 2px 5px; font-size: 10px; font-weight: 600; color: #333;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2); white-space: nowrap; margin: 0; pointer-events: none;
+        }
+        .stop-label::before { display: none; }
+        
+        .label-lines { font-size: 9px; color: #e0004d; display: block; margin-top: 2px; }
+        .label-rt { font-size: 9px; color: #00754a; display: block; margin-top: 2px; }
+
+        /* Popups y Tiempo Real */
+        .popup-title { font-weight: bold; font-size: 13px; margin-bottom: 2px; border-bottom: 1px solid #ccc; padding-bottom: 3px; }
+        .popup-info { font-size: 11px; color: #555; display: block; margin-bottom: 2px; }
+        .rt-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        .rt-table th, .rt-table td { text-align: left; padding: 3px; border-bottom: 1px solid #eee; font-size: 11px;}
+        .line-badge { background: #e0004d; color: white; padding: 2px 5px; border-radius: 3px; font-weight: bold;}
+    </style>
+</head>
+<body>
+
+    <div id="loader">
+        <h2 style="color:#00b373;">Cargando Red de Vitrasa...</h2>
+        <progress id="progress-bar" value="0" max="100"></progress>
+        <div id="status-text" style="margin-top:10px;">Iniciando...</div>
+    </div>
+
+    <div id="map-container">
+        <div id="map"></div>
+    </div>
+
+    <div id="controls">
+        <h3>1. Configuración Visual</h3>
+        <div class="control-group">
+            <label class="checkbox-label"><input type="checkbox" id="toggle-lines" checked> Mostrar Líneas y Rutas</label>
+            <label class="checkbox-label"><input type="checkbox" id="toggle-line-labels" checked> Etiquetas de Línea Inteligentes</label>
+        </div>
+        <hr style="border:0; border-top:1px solid #ddd; margin:10px 0;">
+        <div class="control-group">
+            <label class="checkbox-label"><input type="checkbox" id="toggle-stops" checked> Mostrar Paradas Inteligentes</label>
+        </div>
+        <div class="control-group">
+            <label>Diseño de la parada</label>
+            <select id="stop-style">
+                <option value="classic">Punto Verde Pequeño</option>
+                <option value="blue_dot">Punto Azul Pequeño</option>
+                <option value="emoji_bus">Emoji: 🚌 Autobús</option>
+                <option value="emoji_stop" selected>Emoji: 🚏 Señal</option>
+            </select>
+        </div>
+
+        <h3>2. Textos en el Mapa</h3>
+        <div class="control-group">
+            <label>Contenido extra bajo el nombre:</label>
+            <select id="label-content-type">
+                <option value="name">Solo Nombre</option>
+                <option value="lines">Nombre + Líneas que pasan</option>
+                <option value="rt">Nombre + Tiempo Real (Requiere Carga)</option>
+            </select>
+        </div>
+        
+        <button class="btn btn-secondary" id="btn-toggle-labels" onclick="toggleAllLabels()">👁️ Mostrar etiquetas en paradas</button>
+        
+        <div id="rt-panel" style="display: none; background: #f9f9f9; padding: 8px; border-radius: 4px; margin-top: 5px; border: 1px solid #ddd;">
+            <button class="btn" style="background: #e67e22;" id="btn-load-rt" onclick="loadRTForVisibleStops()">⏱️ Cargar T.Real (Zona Visible)</button>
+            <progress id="rt-progress-bar" value="0" max="100" style="width: 100%; height: 8px; margin-top: 5px; display: none; accent-color:#e67e22;"></progress>
+        </div>
+
+        <h3 style="margin-top: 15px;">3. Impresión y Descarga</h3>
+        <div class="control-group">
+            <label>Tipo de Área a Exportar</label>
+            <select id="export-preset">
+                <option value="current">Pantalla Actual</option>
+                <option value="a4_all">Toda la ciudad (PDF A4)</option>
+                <option value="a3_all">Toda la ciudad (PDF A3)</option>
+                <option value="png_huge" selected>Toda la ciudad (Imagen PNG)</option>
+            </select>
+        </div>
+        <button class="btn" onclick="exportMap()" id="btn-export" style="background: #00b373;">🖨️ Generar Archivo</button>
+    </div>
+
+    <script>
+        const API = {
+            stops: 'https://datos.vigo.org/data/transporte/paradas.json',
+            stopsFallback: 'https://lucasmaneirodelatm-dot.github.io/vitrasa/paradas.json',
+            lines: 'https://lucasmaneirodelatm-dot.github.io/vitrasa/lineas%20(1).geojson',
+            rt: 'https://datos.vigo.org/vci_api_app/api2.jsp?tipo=TRANSPORTE-ESTIMACION-PARADA&id=',
+            rtFallback: 'https://vitrasa-api.lucasmaneirodelatm.workers.dev/parada/'
+        };
+
+        let map, stopsLayerGroup, linesLayerGroup;
+        let rawStops = [], rawLines = null;
+        let showAllLabels = false;
+        let collisionTimeout = null;
+
+        function initMap() {
+            map = L.map('map', { preferCanvas: true }).setView([42.2328, -8.7226], 13);
+            L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+                attribution: '&copy; OpenStreetMap', crossOrigin: true, maxZoom: 19
+            }).addTo(map);
+
+            map.createPane('stopsPane');
+            map.getPane('stopsPane').style.zIndex = 390;
+
+            stopsLayerGroup = L.layerGroup().addTo(map);
+            linesLayerGroup = L.layerGroup().addTo(map);
+
+            map.on('zoomend moveend', () => { 
+                clearTimeout(collisionTimeout);
+                collisionTimeout = setTimeout(calculateCollisions, 100); 
+            });
+        }
+
+        async function fetchAPI(primary, fallback) {
+            try {
+                let r = await fetch(primary);
+                if (!r.ok) throw new Error();
+                return await r.json();
+            } catch (e) {
+                if(!fallback) return null;
+                let r2 = await fetch(fallback);
+                return await r2.json();
+            }
+        }
+
+        function toggleAllLabels() {
+            showAllLabels = !showAllLabels;
+            document.getElementById('btn-toggle-labels').innerText = showAllLabels ? "👁️ Ocultar etiquetas en paradas" : "👁️ Mostrar etiquetas en paradas";
+            checkRTPanel();
+            renderStops(); 
+        }
+        
+        function checkRTPanel() {
+            const type = document.getElementById('label-content-type').value;
+            const panel = document.getElementById('rt-panel');
+            panel.style.display = (showAllLabels && type === 'rt') ? 'block' : 'none';
+        }
+
+        document.getElementById('label-content-type').addEventListener('change', () => {
+            checkRTPanel();
+            if (showAllLabels) renderStops(); 
+        });
+
+        function calculateCollisions() {
+            let ocupados = [];
+            const padding = 12;
+            const bounds = map.getBounds();
+
+            stopsLayerGroup.eachLayer(layer => {
+                let iconEl = layer._icon || layer._path;
+                let labelEl = layer.getTooltip() ? layer.getTooltip()._container : null;
+                if (bounds.contains(layer._latlng)) {
+                    if (iconEl) iconEl.style.display = '';
+                    if (labelEl) labelEl.style.display = '';
+                }
+            });
+
+            stopsLayerGroup.eachLayer(layer => {
+                let iconEl = layer._icon || layer._path;
+                let labelEl = layer.getTooltip() ? layer.getTooltip()._container : null;
+                if (!iconEl) return;
+
+                if (!bounds.contains(layer._latlng)) {
+                    iconEl.style.display = 'none';
+                    if (labelEl) labelEl.style.display = 'none';
+                    return;
+                }
+
+                let pos = map.latLngToContainerPoint(layer._latlng);
+                let w = iconEl.offsetWidth || 16;
+                let h = iconEl.offsetHeight || 16;
+                let rect = { left: pos.x - w/2, right: pos.x + w/2, top: pos.y - h/2, bottom: pos.y + h/2 };
+
+                if (showAllLabels && labelEl) {
+                    let lblW = labelEl.offsetWidth || 80;
+                    let lblH = labelEl.offsetHeight || 20;
+                    rect.right += lblW;
+                    rect.bottom = Math.max(rect.bottom, pos.y + (lblH / 2));
+                    rect.top = Math.min(rect.top, pos.y - (lblH / 2));
+                }
+
+                let choca = ocupados.some(c => 
+                    !(rect.right + padding < c.left || rect.left - padding > c.right || 
+                      rect.bottom + padding < c.top || rect.top - padding > c.bottom)
+                );
+
+                if (choca) {
+                    iconEl.style.display = 'none';
+                    if (labelEl) labelEl.style.display = 'none';
+                } else {
+                    ocupados.push(rect);
+                }
+            });
+
+            linesLayerGroup.eachLayer(layer => {
+                if (layer.options && layer.options.icon && layer.options.icon.options.className === 'line-repeater') {
+                    let el = layer._icon;
+                    if (!el) return;
+
+                    if (!bounds.contains(layer._latlng)) {
+                        el.style.display = 'none';
+                        return;
+                    }
+
+                    el.style.display = ''; 
+                    
+                    let pos = map.latLngToContainerPoint(layer._latlng);
+                    let w = el.offsetWidth || 30;
+                    let h = el.offsetHeight || 16;
+                    let rect = { left: pos.x - w/2, right: pos.x + w/2, top: pos.y - h/2, bottom: pos.y + h/2 };
+
+                    let choca = ocupados.some(c => 
+                        !(rect.right + padding < c.left || rect.left - padding > c.right || rect.bottom + padding < c.top || rect.top - padding > c.bottom)
+                    );
+
+                    if (choca) {
+                        el.style.display = 'none';
+                    } else {
+                        ocupados.push(rect);
+                    }
+                }
+            });
+        }
+
+        async function loadRTForVisibleStops() {
+            let visibleLayers = [];
+            const bounds = map.getBounds();
+            
+            stopsLayerGroup.eachLayer(layer => {
+                if (bounds.contains(layer._latlng)) visibleLayers.push(layer);
+            });
+
+            if (visibleLayers.length === 0) return alert("No hay paradas en la vista actual.");
+
+            const btn = document.getElementById('btn-load-rt');
+            const pb = document.getElementById('rt-progress-bar');
+            btn.disabled = true;
+            pb.style.display = 'block';
+            pb.max = visibleLayers.length;
+            pb.value = 0;
+
+            let procesadas = 0;
+            const batchSize = 5; 
+            
+            for (let i = 0; i < visibleLayers.length; i += batchSize) {
+                const batch = visibleLayers.slice(i, i + batchSize);
+                
+                await Promise.all(batch.map(async (layer) => {
+                    let props = layer.featureProps;
+                    let id = props.codigo || props.id || "S/N";
+                    let name = props.nombre || props.nome || "Parada";
+                    
+                    try {
+                        let rtData = await fetchAPI(API.rt + id, API.rtFallback + id);
+                        let est = rtData.estimaciones || rtData.rutas || (Array.isArray(rtData) ? rtData : []);
+                        
+                        if (est.length === 0) {
+                            layer.setTooltipContent(`<b>${name}</b><span class="label-rt" style="color:#c00;">Sin buses cerca</span>`);
+                        } else {
+                            let txt = est.slice(0,2).map(e => `<b>${e.linea}</b>: ${e.minutos}m`).join(' | ');
+                            layer.setTooltipContent(`<b>${name}</b><span class="label-rt">⏱ ${txt}</span>`);
+                        }
+                    } catch(e) {
+                        layer.setTooltipContent(`<b>${name}</b><span class="label-rt" style="color:#c00;">Error conexión</span>`);
+                    }
+                    procesadas++;
+                }));
+                
+                pb.value = procesadas;
+                btn.innerText = `Cargando... ${procesadas}/${visibleLayers.length}`;
+            }
+
+            btn.innerText = "⏱️ Cargar T.Real (Zona Visible)";
+            btn.disabled = false;
+            setTimeout(() => { pb.style.display = 'none'; }, 1000);
+            setTimeout(calculateCollisions, 100); 
+        }
+
+        function renderStops() {
+            stopsLayerGroup.clearLayers();
+            if (!document.getElementById('toggle-stops').checked) return;
+
+            const styleType = document.getElementById('stop-style').value;
+            const labelType = document.getElementById('label-content-type').value;
+            let stops = [...(rawStops.features || rawStops)]; // <-- Copia del array
+
+
+           // --- LÓGICA DE ORDENACIÓN Y PARADAS INTELIGENTES ---
+    let modo = prompt("Indica el orden de las paradas:\n- 'null' (o cancelar): Orden por defecto (paradas.json)\n- 'id': Ordenar por ID de menor a mayor\n- 'personalizado': Elegir paradas prioritarias manualmente");
+
+    if (modo && modo.trim().toLowerCase() === 'id') {
+        // Ordenar por ID numérico de menor a mayor
+        stops.sort((a, b) => {
+            let pA = a.properties || a;
+            let pB = b.properties || b;
+            let idA = parseInt(pA.id || pA.codigo || pA.cod_parada || 0, 10) || 0;
+            let idB = parseInt(pB.id || pB.codigo || pB.cod_parada || 0, 10) || 0;
+            return idA - idB;
+        });
+    } else if (modo && modo.trim().toLowerCase() === 'personalizado') {
+        let orderedStops = [];
+        let placedIds = new Set();
+
+        while (true) {
+            let input = prompt("Escribe el ID o NOMBRE de la parada prioritaria\n(o escribe 'all' para colocar el resto automáticamente):");
+            
+            if (input === null || input.trim().toLowerCase() === 'all') {
+                break;
+            }
+            
+            let val = input.trim().toLowerCase();
+            if (!val) continue;
+
+            // Buscar la parada por ID o por Nombre en TODO el mapa
+            let stopIndex = stops.findIndex(s => {
+                let p = s.properties || s;
+                let id = String(p.id || p.codigo || p.cod_parada || "").trim().toLowerCase();
+                let name = String(p.nombre || p.nome || "").trim().toLowerCase();
+                return id === val || name === val;
+            });
+
+            if (stopIndex === -1) {
+                alert("❌ La parada no existe en la base de datos.");
+                continue;
+            }
+
+            let targetStop = stops[stopIndex];
+            let p = targetStop.properties || targetStop;
+            let stopId = p.id || p.codigo || p.cod_parada || p.nombre;
+
+            // Verificar si ya fue añadida a la lista prioritaria
+            if (placedIds.has(stopId)) {
+                alert("⚠️ Esta parada ya se ha añadido como prioritaria previamente.");
+                continue;
+            }
+
+            // Se añade a la lista de máxima prioridad sin importar en qué parte del mapa esté
+            placedIds.add(stopId);
+            orderedStops.push(targetStop);
+            alert(`✅ Parada '${p.nombre || stopId}' añadida con máxima prioridad.`);
+        }
+
+        // Añadir todas las paradas restantes al final de la lista
+        let remainingStops = stops.filter(s => {
+            let p = s.properties || s;
+            let stopId = p.id || p.codigo || p.cod_parada || p.nombre;
+            return !placedIds.has(stopId);
+        });
+
+        // Reordenar el array principal: Primero las prioritarias, luego el resto
+        stops = [...orderedStops, ...remainingStops];
+    }
+            stops.forEach(stop => {
+                let lat = stop.geometry ? stop.geometry.coordinates[1] : (stop.lat || stop.latitud);
+                let lng = stop.geometry ? stop.geometry.coordinates[0] : (stop.lon || stop.longitud);
+                if (!lat || !lng) return;
+
+                let props = stop.properties || stop;
+                let id = props.id || props.codigo || props.cod_parada || "S/N";
+                let name = props.nombre || props.nome || "Parada";
+                let lineas = props.lineas || props.rutas || props.lineas_pasan || props.lines || "Ninguna";
+                if (Array.isArray(lineas)) lineas = lineas.join(', ');
+
+                let markerOpts = { pane: 'stopsPane' };
+                let marker;
+
+                if (styleType === 'classic' || styleType === 'blue_dot') {
+                    Object.assign(markerOpts, {
+                        radius: 4, fillColor: styleType === 'classic' ? "#00b373" : "#0055ff",
+                        color: "#fff", weight: 1, fillOpacity: 1
+                    });
+                    marker = L.circleMarker([lat, lng], markerOpts);
+                } else {
+                    let emoji = styleType === 'emoji_bus' ? '🚌' : '🚏';
+                    markerOpts.icon = L.divIcon({ html: emoji, className: 'emoji-icon', iconSize: [16,16] });
+                    marker = L.marker([lat, lng], markerOpts);
+                }
+
+                marker.featureProps = props;
+
+                let basePopupHtml = `
+                    <div class="popup-title">${name}</div>
+                    <span class="popup-info"><b>Código:</b> ${id}</span>
+                    <span class="popup-info"><b>Líneas:</b> ${lineas}</span>
+                `;
+                marker.bindPopup(basePopupHtml);
+
+                marker.on('click', async function() {
+                    let p = this.getPopup();
+                    p.setContent(basePopupHtml + '<i style="color:#00754a;">Consultando tiempo real... ⏱️</i>');
+                    try {
+                        let rtData = await fetchAPI(API.rt + id, API.rtFallback + id);
+                        let estimaciones = rtData.estimaciones || rtData.rutas || (Array.isArray(rtData) ? rtData : []);
+                        
+                        if (estimaciones.length === 0) {
+                            p.setContent(basePopupHtml + `<div style="margin-top:5px; color:#c00;">Sin estimaciones actuales.</div>`);
+                        } else {
+                            let htmlTable = `<table class="rt-table"><tr><th>Línea</th><th>Destino</th><th>Min</th></tr>`;
+                            estimaciones.forEach(est => {
+                                let linea = est.linea || est.ruta || "?";
+                                let destino = est.destino || est.direccion || "Fin";
+                                let min = est.minutos || est.tiempo || "Inminente";
+                                htmlTable += `<tr><td><span class="line-badge">${linea}</span></td><td>${destino}</td><td><b>${min}</b></td></tr>`;
+                            });
+                            htmlTable += `</table>`;
+                            p.setContent(basePopupHtml + htmlTable);
+                        }
+                    } catch(e) { 
+                        p.setContent(basePopupHtml + "<br><span style='color:red;'>❌ Error de red.</span>"); 
+                    }
+                });
+
+                if (showAllLabels) {
+                    let tooltipHtml = `<b>${name}</b>`;
+                    if (labelType === 'lines') tooltipHtml += `<span class="label-lines">Líneas: ${lineas}</span>`;
+                    if (labelType === 'rt') tooltipHtml += `<span class="label-rt">Pendiente de cargar...</span>`;
+
+                    marker.bindTooltip(tooltipHtml, {
+                        permanent: true, direction: 'right', className: 'stop-label', offset: [5, 0]
+                    });
+                }
+
+                stopsLayerGroup.addLayer(marker);
+            });
+            
+            setTimeout(calculateCollisions, 100);
+        }
+
+        function renderLines() {
+            linesLayerGroup.clearLayers();
+            if (!document.getElementById('toggle-lines').checked || !rawLines) return;
+            const showLabels = document.getElementById('toggle-line-labels').checked;
+
+            L.geoJSON(rawLines, {
+                style: f => ({ color: f.properties.color || '#e0004d', weight: 3, opacity: 0.85 }),
+                onEachFeature: (f, layer) => {
+                    let name = f.properties.nombre || f.properties.linea || "";
+                    if (showLabels && name && f.geometry.coordinates) {
+                        let segments = f.geometry.type === 'LineString' ? [f.geometry.coordinates] : f.geometry.coordinates;
+                        segments.forEach(segment => {
+                            if(segment.length > 15) {
+                                [0.2, 0.5, 0.8].forEach(percent => {
+                                    let index = Math.floor(segment.length * percent);
+                                    let pt = segment[index];
+                                    if(pt) {
+                                        let lbl = L.marker([pt[1], pt[0]], {
+                                            icon: L.divIcon({ className: 'line-repeater', html: name, iconSize: [name.length*7, 16] }),
+                                            interactive: false
+                                        });
+                                        linesLayerGroup.addLayer(lbl);
+                                    }
+                                });
+                            }
+                        });
+                    }
+                }
+            }).addTo(linesLayerGroup);
+            
+            setTimeout(calculateCollisions, 100);
+        }
+
+        async function loadData() {
+            initMap();
+            try {
+                document.getElementById('progress-bar').value = 30;
+                rawStops = await fetchAPI(API.stops, API.stopsFallback);
+                document.getElementById('progress-bar').value = 70;
+                document.getElementById('status-text').innerText = "Cargando rutas...";
+                rawLines = await fetchAPI(API.lines, API.lines);
+                
+                renderStops(); renderLines();
+                setTimeout(() => document.getElementById('loader').style.display = 'none', 500);
+            } catch (e) {
+                document.getElementById('status-text').innerText = "Error cargando datos.";
+            }
+        }
+
+        const forceRepaint = () => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 50)));
+
+        async function updateProgressUI(percent, text) {
+            const btn = document.getElementById('btn-export');
+            btn.innerText = percent < 100 ? `${percent}% - ${text}` : `🖨️ Generar Archivo`;
+            btn.style.background = percent > 0 && percent < 100
+                ? `linear-gradient(to right, #00754a ${percent}%, #00b373 ${percent}%)`
+                : '#00b373';
+            await forceRepaint(); 
+        }
+
+        async function exportMap() {
+            const preset = document.getElementById('export-preset').value;
+            const mapEl = document.getElementById('map');
+            const btn = document.getElementById('btn-export');
+            
+            btn.disabled = true;
+            
+            const originalW = mapEl.style.width;
+            const originalH = mapEl.style.height;
+            const origCenter = map.getCenter();
+            const origZoom = map.getZoom();
+            
+            try {
+                await updateProgressUI(5, "Iniciando descarga...");
+
+                if (preset === 'current') {
+                    // Exporta exactamente lo que ves en la pantalla
+                } else {
+                    await updateProgressUI(15, "Calculando encuadre y zoom...");
+
+                    // Encuadre ajustado a la mancha de paradas reales
+                    let bounds = L.latLngBounds();
+                    stopsLayerGroup.eachLayer(layer => {
+                        if (layer.getLatLng) bounds.extend(layer.getLatLng());
+                    });
+
+                    if (!bounds.isValid()) {
+                        linesLayerGroup.eachLayer(layer => {
+                            if (layer.getLatLng) bounds.extend(layer.getLatLng());
+                            else if (layer.getBounds) bounds.extend(layer.getBounds());
+                        });
+                    }
+
+                    if (!bounds.isValid()) {
+                        throw new Error("No se han podido calcular los límites de la ciudad.");
+                    }
+
+                    // Calculamos los píxeles necesarios a tu ZOOM ACTUAL EXACTO
+                    let nw = map.project(bounds.getNorthWest(), origZoom);
+                    let se = map.project(bounds.getSouthEast(), origZoom);
+                    
+                    let calcW = Math.ceil(Math.abs(se.x - nw.x)) + 120; 
+                    let calcH = Math.ceil(Math.abs(se.y - nw.y)) + 120;
+                    
+                    // Límite de seguridad de hardware del navegador (12.000 píxeles)
+                    const MAX_CANVAS_PX = 12000;
+                    if (calcW > MAX_CANVAS_PX || calcH > MAX_CANVAS_PX) {
+                        const scale = Math.min(MAX_CANVAS_PX / calcW, MAX_CANVAS_PX / calcH);
+                        calcW = Math.round(calcW * scale);
+                        calcH = Math.round(calcH * scale);
+                    }
+
+                    // Redimensionamos el elemento en pantalla al tamaño entero de la ciudad
+                    mapEl.style.width = calcW + 'px';
+                    mapEl.style.height = calcH + 'px';
+                    map.invalidateSize();
+                    
+                    // MANTENEMOS TU ZOOM ACTUAL (¡Sin usar fitBounds!)
+                    map.setView(bounds.getCenter(), origZoom, { animate: false });
+                }
+                
+                await updateProgressUI(35, "Cargando terreno en alta definición...");
+                await new Promise(r => setTimeout(r, 2000)); 
+                
+                await updateProgressUI(60, "Calculando etiquetas y anticolisión...");
+                calculateCollisions(); 
+                await forceRepaint();
+                
+                await updateProgressUI(80, "Generando mapa final...");
+                const canvas = await html2canvas(mapEl, { 
+                    useCORS: true, 
+                    allowTaint: false, 
+                    scale: 1,
+                    logging: false
+                });
+                
+                await updateProgressUI(95, "Guardando archivo...");
+
+                if (preset.includes('a4') || preset.includes('a3')) {
+                    const { jsPDF } = window.jspdf;
+                    const formatSize = preset === 'a3_all' ? 'a3' : 'a4';
+                    
+                    const doc = new jsPDF({ orientation: 'l', unit: 'mm', format: formatSize });
+                    const pageWidth = doc.internal.pageSize.getWidth();
+                    const pageHeight = doc.internal.pageSize.getHeight();
+                    
+                    const ratio = Math.min(pageWidth / canvas.width, pageHeight / canvas.height);
+                    const imgW = canvas.width * ratio;
+                    const imgH = canvas.height * ratio;
+                    
+                    const x = (pageWidth - imgW) / 2;
+                    const y = (pageHeight - imgH) / 2;
+
+                    doc.addImage(canvas.toDataURL('image/jpeg', 0.92), 'JPEG', x, y, imgW, imgH);
+                    doc.save(`Plano_Vitrasa_${formatSize.toUpperCase()}.pdf`);
+                } else {
+                    let link = document.createElement('a');
+                    link.download = `Mapa_Vitrasa_Zoom${origZoom}_Completo.png`;
+                    link.href = canvas.toDataURL('image/png', 1.0);
+                    link.click();
+                }
+            } catch(e) {
+                console.error(e);
+                alert("Error al exportar: " + (e.message || "Comprueba tu conexión."));
+            } finally {
+                await updateProgressUI(100, "");
+                mapEl.style.width = originalW || '100%';
+                mapEl.style.height = originalH || '100%';
+                map.invalidateSize();
+                map.setView(origCenter, origZoom, { animate: false });
+                setTimeout(calculateCollisions, 100);
+                
+                btn.disabled = false;
+            }
+        }
+
+        ['stop-style'].forEach(id => document.getElementById(id).addEventListener('change', renderStops));
+        ['toggle-stops'].forEach(id => document.getElementById(id).addEventListener('change', () => { checkRTPanel(); renderStops(); }));
+        ['toggle-lines', 'toggle-line-labels'].forEach(id => document.getElementById(id).addEventListener('change', renderLines));
+
+        window.onload = loadData;
+    </script>
+</body>
+</html>
